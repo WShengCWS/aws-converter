@@ -227,7 +227,7 @@ function styleCell(opts = {}) {
 //                 E=Upfront, F=Monthly, G=First 12 months total, H=Currency, I=Config
 async function buildXlsx(parsed, filename) {
   const { rows } = parsed;
-  const wb = XLSXStyle.utils.book_new();
+  const wb = XLSX.utils.book_new();
   const sname = (rows[0]?.group || filename.replace(/\.csv$/i, '')).substring(0, 31) || 'Sheet1';
   const ws = {};
 
@@ -240,7 +240,7 @@ async function buildXlsx(parsed, filename) {
     'Upfront', 'Monthly', 'First 12 months total', 'Currency', 'Configuration summary'
   ];
   HEADERS.forEach((h, i) => {
-    const col = XLSXStyle.utils.encode_col(i);
+    const col = XLSX.utils.encode_col(i);
     const isConfigCol = (i === 8);
     ws[col + '2'] = {
       v: h, t: 's',
@@ -321,10 +321,10 @@ async function buildXlsx(parsed, filename) {
     { wch: 90 }    // I Config summary
   ];
 
-  XLSXStyle.utils.book_append_sheet(wb, ws, sname);
+  XLSX.utils.book_append_sheet(wb, ws, sname);
 
   // Write base buffer
-  const buf = XLSXStyle.write(wb, { type: 'array', bookType: 'xlsx' });
+  const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
 
   // ── Inject Excel Table via JSZip ────────────────────────────────────────
   const zip = await JSZip.loadAsync(buf);
