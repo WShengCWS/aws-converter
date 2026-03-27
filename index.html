@@ -226,34 +226,49 @@ function styleCell(opts = {}) {
 }
 
 // ── Build xlsx ─────────────────────────────────────────────────────────────
-// Output columns: A=Group, B=Region, C=Description, D=Service,
-//                 E=Upfront, F=Monthly, G=First 12 months total, H=Currency, I=Config
+// Columns WITH upfront:    A=Group B=Region C=Desc D=Service E=Upfront F=Monthly G=First12 H=Currency I=Config
+// Columns WITHOUT upfront: A=Group B=Region C=Desc D=Service E=Monthly F=First12  G=Currency H=Config
 async function buildXlsx(parsed, filename) {
   const { rows } = parsed;
   const wb = XLSX.utils.book_new();
   const sname = (rows[0]?.group || filename.replace(/\.csv$/i, '')).substring(0, 31) || 'Sheet1';
   const ws = {};
 
-  // Row 1 title
-  ws['A1'] = { v: 'Detailed Estimate', t: 's', s: styleCell({ h: 'left' }) };
+  // Detect if ANY row has a non-zero upfront — if total upfront == 0, drop the column entirely
+  const totalUpfront = rows.reduce((sum, r) => sum + (r.upfront || 0), 0);
+  const hasUpfrontCol = totalUpfront > 0;
 
-  // Row 2 headers — 9 columns now (added Upfront)
-  const HEADERS = [
-    'Group hierarchy', 'Region', 'Description', 'Service',
-    'Upfront', 'Monthly', 'First 12 months total', 'Currency', 'Configuration summary'
-  ];
-  // i: 0=Group,1=Region,2=Desc,3=Service,4=Upfront,5=Monthly,6=First12,7=Currency,8=Config
+  // ── Column definitions (conditional) ──────────────────────────────────
+  // With upfront:    9 cols  A-I
+  // Without upfront: 8 cols  A-H
+  const HEADERS = hasUpfrontCol
+    ? ['Group hierarchy', 'Region', 'Description', 'Service', 'Upfront', 'Monthly', 'First 12 months total', 'Currency', 'Configuration summary']
+    : ['Group hierarchy', 'Region', 'Description', 'Service', 'Monthly', 'First 12 months total', 'Currency', 'Configuration summary'];
+  const colCount = HEADERS.length;
+
+  // Helper: get Excel column letter by logical index
+  const C = i => XLSX.utils.encode_col(i);
+
+  // Numeric col indices (0-based)
+  const numericIdx  = hasUpfrontCol ? [4, 5, 6] : [4, 5];
+  const currencyIdx = hasUpfrontCol ? 7 : 6;
+  const configIdx   = hasUpfrontCol ? 8 : 7;
+
+  // Row 1 title
+  ws['A1'] = { v: 'Detailed Estimate', t: 's', s: styleCell({}) };
+
+  // Row 2 headers — ALL left-aligned, numeric headers right-aligned, currency center
   HEADERS.forEach((h, i) => {
-    const col = XLSX.utils.encode_col(i);
-    const isNumeric  = (i === 4 || i === 5 || i === 6);
-    const isCurrency = (i === 7);
-    ws[col + '2'] = {
+    const isNumeric  = numericIdx.includes(i);
+    const isCurrency = (i === currencyIdx);
+    ws[C(i) + '2'] = {
       v: h, t: 's',
       s: styleCell({
         bold: true,
-        wrap: (i === 8),
+        wrap: (i === configIdx),
         rightAlign: isNumeric,
         h: isCurrency ? 'center' : undefined
+        // all others default to left via styleCell default
       })
     };
   });
@@ -263,72 +278,108 @@ async function buildXlsx(parsed, filename) {
   rows.forEach((r, idx) => {
     const rowN = DR + idx;
 
-    ws['A' + rowN] = { v: r.group,    t: 's', s: styleCell({}) };
-    ws['B' + rowN] = { v: r.region,   t: 's', s: styleCell({}) };
-    ws['C' + rowN] = { v: r.desc,     t: 's', s: styleCell({}) };
-    ws['D' + rowN] = { v: r.service,  t: 's', s: styleCell({}) };
+    ws[C(0) + rowN] = { v: r.group,   t: 's', s: styleCell({}) };
+    ws[C(1) + rowN] = { v: r.region,  t: 's', s: styleCell({}) };
+    ws[C(2) + rowN] = { v: r.desc,    t: 's', s: styleCell({}) };
+    ws[C(3) + rowN] = { v: r.service, t: 's', s: styleCell({}) };
 
-    // Upfront column (E) — right-aligned, one-time cost
-    if (r.upfront > 0) {
-      ws['E' + rowN] = { v: r.upfront, t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT, rightAlign: true }) };
-    } else {
-      ws['E' + rowN] = { v: '-', t: 's', s: styleCell({ rightAlign: true }) };
+    let ci = 4; // next column index
+
+    if (hasUpfrontCol) {
+      // Upfront column — one-time cost, right-aligned
+      if (r.upfront > 0) {
+        ws[C(ci) + rowN] = { v: r.upfront, t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT, rightAlign: true }) };
+      } else {
+        ws[C(ci) + rowN] = { v: '-', t: 's', s: styleCell({ rightAlign: true }) };
+      }
+      ci++;
     }
 
-    // Monthly column (F) — right-aligned
+    // Monthly column — right-aligned
     if (r.monthly > 0) {
-      ws['F' + rowN] = { v: r.monthly, t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT, rightAlign: true }) };
+      ws[C(ci) + rowN] = { v: r.monthly, t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT, rightAlign: true }) };
     } else {
-      ws['F' + rowN] = { v: '-', t: 's', s: styleCell({ rightAlign: true }) };
+      ws[C(ci) + rowN] = { v: '-', t: 's', s: styleCell({ rightAlign: true }) };
     }
+    ci++;
 
-    // First 12 months = Monthly * 12 only (Upfront is a one-time cost, not recurring)
-    ws['G' + rowN] = {
-      f: 'F' + rowN + '*12',
-      t: 'n', z: NUM_FMT,
-      s: styleCell({ numFmt: NUM_FMT, rightAlign: true })
-    };
+    // First 12 months = Monthly * 12
+    ws[C(ci) + rowN] = { f: C(ci-1) + rowN + '*12', t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT, rightAlign: true }) };
+    ci++;
 
-    ws['H' + rowN] = { v: r.currency, t: 's', s: styleCell({ bold: true, h: 'center' }) };
-    ws['I' + rowN] = { v: r.config,   t: 's', s: styleCell({ wrap: true }) };
+    // Currency — center
+    ws[C(ci) + rowN] = { v: r.currency, t: 's', s: styleCell({ bold: true, h: 'center' }) };
+    ci++;
+
+    // Config summary — left, wrap
+    ws[C(ci) + rowN] = { v: r.config, t: 's', s: styleCell({ wrap: true }) };
   });
 
   // ── Total row ──────────────────────────────────────────────────────────
   const TR = DR + rows.length;
   const lastDR = TR - 1;
-
   const oStyle = (extra = {}) => styleCell({ fill: ORANGE, bold: true, ...extra });
 
-  ws['A' + TR] = { v: '', t: 's', s: oStyle({}) };
-  ws['B' + TR] = { v: '', t: 's', s: oStyle({}) };
-  ws['C' + TR] = { v: '', t: 's', s: oStyle({}) };
-  ws['D' + TR] = { v: 'TOTAL', t: 's', s: oStyle({ rightAlign: true }) };
+  // Fill A-C empty, D = TOTAL label right-aligned
+  ws[C(0) + TR] = { v: '', t: 's', s: oStyle({}) };
+  ws[C(1) + TR] = { v: '', t: 's', s: oStyle({}) };
+  ws[C(2) + TR] = { v: '', t: 's', s: oStyle({}) };
+  ws[C(3) + TR] = { v: 'TOTAL', t: 's', s: oStyle({ rightAlign: true }) };
 
-  // SUM totals — right-aligned; currency center; config left
-  ws['E' + TR] = { f: 'SUM(E' + DR + ':E' + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
-  ws['F' + TR] = { f: 'SUM(F' + DR + ':F' + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
-  ws['G' + TR] = { f: 'SUM(G' + DR + ':G' + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
-  ws['H' + TR] = { v: 'USD', t: 's', s: oStyle({ h: 'center' }) };
-  ws['I' + TR] = { v: '', t: 's', s: oStyle({}) };
+  let ti = 4;
+
+  if (hasUpfrontCol) {
+    ws[C(ti) + TR] = { f: 'SUM(' + C(ti) + DR + ':' + C(ti) + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
+    ti++;
+  }
+
+  // Monthly total
+  ws[C(ti) + TR] = { f: 'SUM(' + C(ti) + DR + ':' + C(ti) + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
+  ti++;
+
+  // First 12 months total
+  ws[C(ti) + TR] = { f: 'SUM(' + C(ti) + DR + ':' + C(ti) + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
+  ti++;
+
+  // Currency
+  ws[C(ti) + TR] = { v: 'USD', t: 's', s: oStyle({ h: 'center' }) };
+  ti++;
+
+  // Config (empty)
+  ws[C(ti) + TR] = { v: '', t: 's', s: oStyle({}) };
 
   // Acknowledgement
+  const lastCol = C(colCount - 1);
   const AR = TR + 3;
-  ws['A' + AR]       = { v: 'Acknowledgement', t: 's', s: styleCell({ h: 'left' }) };
-  ws['A' + (AR + 1)] = { v: "* AWS Pricing Calculator provides only an estimate of your AWS fees and doesn't include any taxes that might apply.", t: 's', s: styleCell({ h: 'left' }) };
+  ws['A' + AR]       = { v: 'Acknowledgement', t: 's', s: styleCell({}) };
+  ws['A' + (AR + 1)] = { v: "* AWS Pricing Calculator provides only an estimate of your AWS fees and doesn't include any taxes that might apply.", t: 's', s: styleCell({}) };
 
-  ws['!ref'] = 'A1:I' + (AR + 1);
-  // A=Group, B=Region, C=Desc, D=Service, E=Upfront, F=Monthly, G=First12, H=Currency, I=Config
-  ws['!cols'] = [
-    { wch: 17 },   // A Group
-    { wch: 21 },   // B Region
-    { wch: 30 },   // C Description
-    { wch: 26.5 }, // D Service
-    { wch: 14 },   // E Upfront
-    { wch: 14 },   // F Monthly
-    { wch: 20.7 }, // G First 12 months
-    { wch: 11 },   // H Currency
-    { wch: 90 }    // I Config summary
-  ];
+  ws['!ref'] = 'A1:' + lastCol + (AR + 1);
+
+  if (hasUpfrontCol) {
+    ws['!cols'] = [
+      { wch: 17 },   // A Group
+      { wch: 21 },   // B Region
+      { wch: 30 },   // C Description
+      { wch: 26.5 }, // D Service
+      { wch: 14 },   // E Upfront
+      { wch: 14 },   // F Monthly
+      { wch: 20.7 }, // G First 12 months
+      { wch: 11 },   // H Currency
+      { wch: 90 }    // I Config summary
+    ];
+  } else {
+    ws['!cols'] = [
+      { wch: 17 },   // A Group
+      { wch: 21 },   // B Region
+      { wch: 30 },   // C Description
+      { wch: 26.5 }, // D Service
+      { wch: 14 },   // E Monthly
+      { wch: 20.7 }, // F First 12 months
+      { wch: 11 },   // G Currency
+      { wch: 90 }    // H Config summary
+    ];
+  }
 
   XLSX.utils.book_append_sheet(wb, ws, sname);
 
@@ -338,21 +389,16 @@ async function buildXlsx(parsed, filename) {
   // ── Inject Excel Table via JSZip ────────────────────────────────────────
   const zip = await JSZip.loadAsync(buf);
 
-  const tableRef = 'A2:I' + TR;
+  const tableRef = 'A2:' + lastCol + TR;
+  const tableColsXml = HEADERS.map((h, i) =>
+    `    <tableColumn id="${i+1}" name="${h}"/>`
+  ).join('\n');
   const tableXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
   id="1" name="Table1" displayName="Table1"
   ref="${tableRef}" headerRowCount="1">
-  <tableColumns count="9">
-    <tableColumn id="1" name="Group hierarchy"/>
-    <tableColumn id="2" name="Region"/>
-    <tableColumn id="3" name="Description"/>
-    <tableColumn id="4" name="Service"/>
-    <tableColumn id="5" name="Upfront"/>
-    <tableColumn id="6" name="Monthly"/>
-    <tableColumn id="7" name="First 12 months total"/>
-    <tableColumn id="8" name="Currency"/>
-    <tableColumn id="9" name="Configuration summary"/>
+  <tableColumns count="${colCount}">
+${tableColsXml}
   </tableColumns>
   <tableStyleInfo name="TableStyleLight8"
     showFirstColumn="0" showLastColumn="0"
