@@ -588,7 +588,9 @@ document.getElementById('convertBtn').addEventListener('click', async () => {
       }
       rws['!cols'] = colWidths.map((w, i) => {
         const MIN = rNI.includes(i) ? 16 : 10;
-        return { wch: Math.min(Math.max(w + 2, MIN), 80) }; // max 80 chars wide
+        const isConfig = (i === rCI);
+        const width = Math.max(w + 2, MIN);
+        return { wch: isConfig ? Math.min(width, 80) : width }; // only config col capped at 80
       });
 
       // Autofit row heights based on config col wrap at its actual width
