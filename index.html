@@ -175,19 +175,20 @@ function parseAWSCsv(text) {
 
     // CSV columns: Group, Region, Description, Service, Upfront, Monthly, First12, Currency, ...Config
     const [group, region, desc, service, upfrontRaw, monthlyRaw, first12Raw, currency, ...configParts] = cols;
-    const config = configParts.join(',').replace(/^"|"$/g, '');
+    // Strip leading comma from config summary (CSV artifact)
+    const config = configParts.join(',').replace(/^"|"$/g, '').replace(/^,\s*/, '');
 
     const upfrontVal = parseFloat(upfrontRaw);
     const monthlyVal = parseFloat(monthlyRaw);
 
     const hasUpfront = !isNaN(upfrontVal) && upfrontVal > 0;
     const hasMonthly = !isNaN(monthlyVal) && monthlyVal > 0;
+    const upfrontMissing = upfrontRaw === undefined || String(upfrontRaw).trim() === '';
 
-    // Skip rows where BOTH are zero/empty
-    if (!hasUpfront && !hasMonthly) {
-      filtered++;
-      continue;
-    }
+    // Remove row if upfront column is entirely absent/empty
+    if (upfrontMissing) { filtered++; continue; }
+    // Remove row if both upfront and monthly are zero/empty
+    if (!hasUpfront && !hasMonthly) { filtered++; continue; }
 
     rows.push({
       group,
@@ -207,14 +208,16 @@ function parseAWSCsv(text) {
 const ORANGE = 'FCE4D6';
 const NUM_FMT = '#,##0.00';
 
-// col: column letter used to determine if config col (H = index 8, now I = index 9)
+// Alignment: rightAlign=true for numbers, h='center' for currency, default is left
 function styleCell(opts = {}) {
   const s = {};
   if (opts.fill) s.fill = { fgColor: { rgb: opts.fill }, patternType: 'solid' };
   s.font = { bold: opts.bold || false, name: 'Calibri', sz: 11 };
-  // Configuration summary column gets left-align; everything else center
+  let horiz = 'left'; // default everything to left
+  if (opts.rightAlign) horiz = 'right';
+  else if (opts.h) horiz = opts.h; // explicit override (e.g. 'center' for currency)
   s.alignment = {
-    horizontal: opts.leftAlign ? 'left' : (opts.h || 'center'),
+    horizontal: horiz,
     vertical: opts.v || 'center',
     wrapText: opts.wrap || false
   };
@@ -239,12 +242,19 @@ async function buildXlsx(parsed, filename) {
     'Group hierarchy', 'Region', 'Description', 'Service',
     'Upfront', 'Monthly', 'First 12 months total', 'Currency', 'Configuration summary'
   ];
+  // i: 0=Group,1=Region,2=Desc,3=Service,4=Upfront,5=Monthly,6=First12,7=Currency,8=Config
   HEADERS.forEach((h, i) => {
     const col = XLSX.utils.encode_col(i);
-    const isConfigCol = (i === 8);
+    const isNumeric  = (i === 4 || i === 5 || i === 6);
+    const isCurrency = (i === 7);
     ws[col + '2'] = {
       v: h, t: 's',
-      s: styleCell({ bold: true, wrap: isConfigCol, leftAlign: isConfigCol })
+      s: styleCell({
+        bold: true,
+        wrap: (i === 8),
+        rightAlign: isNumeric,
+        h: isCurrency ? 'center' : undefined
+      })
     };
   });
 
@@ -258,29 +268,29 @@ async function buildXlsx(parsed, filename) {
     ws['C' + rowN] = { v: r.desc,     t: 's', s: styleCell({}) };
     ws['D' + rowN] = { v: r.service,  t: 's', s: styleCell({}) };
 
-    // Upfront column (E)
+    // Upfront column (E) — right-aligned, one-time cost
     if (r.upfront > 0) {
-      ws['E' + rowN] = { v: r.upfront, t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT }) };
+      ws['E' + rowN] = { v: r.upfront, t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT, rightAlign: true }) };
     } else {
-      ws['E' + rowN] = { v: '-', t: 's', s: styleCell({}) };
+      ws['E' + rowN] = { v: '-', t: 's', s: styleCell({ rightAlign: true }) };
     }
 
-    // Monthly column (F)
+    // Monthly column (F) — right-aligned
     if (r.monthly > 0) {
-      ws['F' + rowN] = { v: r.monthly, t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT }) };
+      ws['F' + rowN] = { v: r.monthly, t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT, rightAlign: true }) };
     } else {
-      ws['F' + rowN] = { v: '-', t: 's', s: styleCell({}) };
+      ws['F' + rowN] = { v: '-', t: 's', s: styleCell({ rightAlign: true }) };
     }
 
     // First 12 months = Monthly * 12 only (Upfront is a one-time cost, not recurring)
     ws['G' + rowN] = {
       f: 'F' + rowN + '*12',
       t: 'n', z: NUM_FMT,
-      s: styleCell({ numFmt: NUM_FMT })
+      s: styleCell({ numFmt: NUM_FMT, rightAlign: true })
     };
 
-    ws['H' + rowN] = { v: r.currency, t: 's', s: styleCell({ bold: true }) };
-    ws['I' + rowN] = { v: r.config,   t: 's', s: styleCell({ wrap: true, leftAlign: true }) };
+    ws['H' + rowN] = { v: r.currency, t: 's', s: styleCell({ bold: true, h: 'center' }) };
+    ws['I' + rowN] = { v: r.config,   t: 's', s: styleCell({ wrap: true }) };
   });
 
   // ── Total row ──────────────────────────────────────────────────────────
@@ -292,14 +302,14 @@ async function buildXlsx(parsed, filename) {
   ws['A' + TR] = { v: '', t: 's', s: oStyle({}) };
   ws['B' + TR] = { v: '', t: 's', s: oStyle({}) };
   ws['C' + TR] = { v: '', t: 's', s: oStyle({}) };
-  ws['D' + TR] = { v: 'TOTAL', t: 's', s: oStyle({ h: 'right' }) };
+  ws['D' + TR] = { v: 'TOTAL', t: 's', s: oStyle({ rightAlign: true }) };
 
-  // SUM upfront — only numeric cells contribute (text '-' = 0 in SUM, which is fine)
-  ws['E' + TR] = { f: 'SUM(E' + DR + ':E' + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT }) };
-  ws['F' + TR] = { f: 'SUM(F' + DR + ':F' + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT }) };
-  ws['G' + TR] = { f: 'SUM(G' + DR + ':G' + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT }) };
-  ws['H' + TR] = { v: 'USD', t: 's', s: oStyle({}) };
-  ws['I' + TR] = { v: '', t: 's', s: oStyle({ leftAlign: true }) };
+  // SUM totals — right-aligned; currency center; config left
+  ws['E' + TR] = { f: 'SUM(E' + DR + ':E' + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
+  ws['F' + TR] = { f: 'SUM(F' + DR + ':F' + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
+  ws['G' + TR] = { f: 'SUM(G' + DR + ':G' + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
+  ws['H' + TR] = { v: 'USD', t: 's', s: oStyle({ h: 'center' }) };
+  ws['I' + TR] = { v: '', t: 's', s: oStyle({}) };
 
   // Acknowledgement
   const AR = TR + 3;
