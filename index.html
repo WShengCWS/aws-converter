@@ -396,45 +396,7 @@ async function buildXlsx(parsed, filename) {
 
   ws['!ref'] = 'A1:' + lastCol + (AR + 1);
 
-  // ── Autofit column widths based on actual cell content (table area only) ──
-  // Scan rows 2 (header) through TR (total row), skip acknowledgement rows
-  const colWidths = Array(colCount).fill(0);
-  for (let r = 2; r <= TR; r++) {
-    for (let ci2 = 0; ci2 < colCount; ci2++) {
-      const cell = ws[C(ci2) + r];
-      if (!cell) continue;
-      const val = cell.v !== undefined ? String(cell.v) : (cell.f ? '=FORMULA' : '');
-      // Use display-friendly length; for numeric cells estimate formatted width
-      let len;
-      if (cell.t === 'n' && cell.v !== undefined) {
-        // Formatted number like 1,149,928.70 — approximate char count
-        len = Number(cell.v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).length + 2;
-      } else {
-        len = val.length;
-      }
-      // Config summary: cap at 60 chars for column width (content wraps)
-      if (ci2 === configIdx) len = Math.min(len, 60);
-      if (len > colWidths[ci2]) colWidths[ci2] = len;
-    }
-  }
-  // Add padding and set minimum widths per column type
-  ws['!cols'] = colWidths.map((w, i) => {
-    const MIN = (i === configIdx) ? 40 : (numericIdx.includes(i) ? 16 : 10);
-    return { wch: Math.max(w + 2, MIN) };
-  });
-
-  // ── Autofit row heights for table rows (header + data + total) ──
-  // Config summary col can wrap — estimate height by content length / col width
-  const configColWidth = ws['!cols'][configIdx]?.wch || 60;
-  ws['!rows'] = [];
-  for (let r = 2; r <= TR; r++) {
-    const configCell = ws[C(configIdx) + r];
-    const configText = configCell?.v ? String(configCell.v) : '';
-    const lines = configText.length > 0 ? Math.ceil(configText.length / configColWidth) : 1;
-    const hpx = Math.max(20, lines * 15); // 15px per line, min 20px
-    ws['!rows'][r - 1] = { hpx };
-  }
-
+  // Autofit applied externally after buildXlsx returns (Step 4 of convert flow)
   XLSX.utils.book_append_sheet(wb, ws, sname);
 
   // Write base buffer
@@ -487,7 +449,7 @@ ${tableColsXml}
   }
 
   const finalBuf = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
-  return { buf: finalBuf, outName: filename.replace(/\.(csv|json)$/i, '.xlsx') };
+  return { buf: finalBuf, outName: filename.replace(/\.(csv|json)$/i, '.xlsx'), ws, TR, DR, colCount, numericIdx, configIdx, C };
 }
 
 // ── UI state ───────────────────────────────────────────────────────────────
@@ -605,8 +567,40 @@ document.getElementById('convertBtn').addEventListener('click', async () => {
       setStep(3); logMsg('Step 3 — Writing formulas + Table XML…', 'step');
       await new Promise(r => setTimeout(r, 30));
 
-      setStep(4); logMsg('Step 4 — Finalising…', 'step');
+      setStep(4); logMsg('Step 4 — Autofit columns & row heights…', 'step');
       const result = await buildXlsx(parsed, item.file.name);
+
+      // ── Autofit: scan table area (rows 2→TR), max col width 80 ──
+      const { ws: rws, TR: rTR, DR: rDR, colCount: rCC, numericIdx: rNI, configIdx: rCI, C: rC } = result;
+      const colWidths = Array(rCC).fill(0);
+      for (let r = 2; r <= rTR; r++) {
+        for (let ci2 = 0; ci2 < rCC; ci2++) {
+          const cell = rws[rC(ci2) + r];
+          if (!cell) continue;
+          let len;
+          if (cell.t === 'n' && cell.v !== undefined) {
+            len = Number(cell.v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).length + 2;
+          } else {
+            len = cell.v !== undefined ? String(cell.v).length : 0;
+          }
+          if (len > colWidths[ci2]) colWidths[ci2] = len;
+        }
+      }
+      rws['!cols'] = colWidths.map((w, i) => {
+        const MIN = rNI.includes(i) ? 16 : 10;
+        return { wch: Math.min(Math.max(w + 2, MIN), 80) }; // max 80 chars wide
+      });
+
+      // Autofit row heights based on config col wrap at its actual width
+      const cfgWidth = rws['!cols'][rCI]?.wch || 80;
+      rws['!rows'] = [];
+      for (let r = 2; r <= rTR; r++) {
+        const cell = rws[rC(rCI) + r];
+        const txt = cell?.v ? String(cell.v) : '';
+        const lines = txt.length > 0 ? Math.ceil(txt.length / cfgWidth) : 1;
+        rws['!rows'][r - 1] = { hpx: Math.max(20, lines * 15) };
+      }
+      logMsg('  Column widths & row heights applied', 'step');
 
       converted[item.file.name] = result;
       item.status = 'done';
