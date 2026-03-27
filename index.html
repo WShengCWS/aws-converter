@@ -272,10 +272,9 @@ async function buildXlsx(parsed, filename) {
       ws['F' + rowN] = { v: '-', t: 's', s: styleCell({}) };
     }
 
-    // First 12 months = Upfront + (Monthly * 12)
-    // Use formula referencing E and F columns
+    // First 12 months = Monthly * 12 only (Upfront is a one-time cost, not recurring)
     ws['G' + rowN] = {
-      f: 'E' + rowN + '+F' + rowN + '*12',
+      f: 'F' + rowN + '*12',
       t: 'n', z: NUM_FMT,
       s: styleCell({ numFmt: NUM_FMT })
     };
