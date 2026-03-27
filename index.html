@@ -80,16 +80,16 @@
     <div class="badge">AWS Pricing Calculator</div>
     <h1>CSV &rarr; <span>Excel</span><br>Converter</h1>
     <p class="subtitle">
-      Drop your AWS Pricing Calculator .csv exports.<br>
+      Drop your AWS Pricing Calculator .csv or .json exports.<br>
       Styled .xlsx · Excel Table · Orange totals · Upfront + Monthly columns.
     </p>
   </header>
 
   <div class="drop-zone" id="dropZone">
-    <input type="file" id="fileInput" accept=".csv" multiple>
+    <input type="file" id="fileInput" accept=".csv,.json" multiple>
     <div class="drop-icon">&#128193;</div>
     <h2>Drop CSV files here</h2>
-    <p>or click to browse &middot; Multiple files supported</p>
+    <p>or click to browse &middot; .csv and .json supported</p>
   </div>
 
   <div class="file-list" id="fileList"></div>
@@ -192,6 +192,53 @@ function parseAWSCsv(text) {
 
     rows.push({
       group,
+      region,
+      desc,
+      service,
+      upfront: hasUpfront ? roundHalfUp(upfrontVal, 2) : 0,
+      monthly: hasMonthly ? roundHalfUp(monthlyVal, 2) : 0,
+      currency,
+      config
+    });
+  }
+  return { rows, filtered };
+}
+
+
+// ── JSON Parser ─────────────────────────────────────────────────────────────
+// Parses AWS Pricing Calculator JSON export format
+function parseAWSJson(text) {
+  let rows = [], filtered = 0;
+  let data;
+  try { data = JSON.parse(text); } catch(e) { throw new Error('Invalid JSON: ' + e.message); }
+
+  const groupName = data['Name'] || '';
+  const currency  = data?.Metadata?.Currency || 'USD';
+  const services  = data?.Groups?.Services || [];
+
+  for (const svc of services) {
+    const service  = svc['Service Name'] || '';
+    const region   = svc['Region'] || '';
+    const desc     = '';
+    const cost     = svc['Service Cost'] || {};
+    const props    = svc['Properties'] || {};
+
+    const upfrontVal = parseFloat(cost['upfront'] || '0');
+    const monthlyVal = parseFloat(cost['monthly'] || '0');
+
+    const hasUpfront = !isNaN(upfrontVal) && upfrontVal > 0;
+    const hasMonthly = !isNaN(monthlyVal) && monthlyVal > 0;
+
+    // Skip rows where both are zero
+    if (!hasUpfront && !hasMonthly) { filtered++; continue; }
+
+    // Build config summary from Properties object
+    const config = Object.entries(props)
+      .map(([k, v]) => k + ': ' + v)
+      .join(', ');
+
+    rows.push({
+      group:   groupName,
       region,
       desc,
       service,
@@ -433,7 +480,7 @@ ${tableColsXml}
   }
 
   const finalBuf = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
-  return { buf: finalBuf, outName: filename.replace(/\.csv$/i, '.xlsx') };
+  return { buf: finalBuf, outName: filename.replace(/\.(csv|json)$/i, '.xlsx') };
 }
 
 // ── UI state ───────────────────────────────────────────────────────────────
@@ -442,7 +489,8 @@ const converted = {};
 
 function addFiles(newFiles) {
   for (const f of newFiles) {
-    if (!f.name.toLowerCase().endsWith('.csv')) { logMsg('Skipped "' + f.name + '" — not a CSV', 'err'); continue; }
+    const ext = f.name.toLowerCase().split('.').pop();
+    if (ext !== 'csv' && ext !== 'json') { logMsg('Skipped "' + f.name + '" — only .csv and .json supported', 'err'); continue; }
     if (files.find(x => x.file.name === f.name)) continue;
     files.push({ file: f, status: 'pending' });
     delete converted[f.name];
@@ -524,7 +572,9 @@ document.getElementById('convertBtn').addEventListener('click', async () => {
 
       setStep(1);
       logMsg('Step 1 — Cleaning data…', 'step');
-      const parsed = parseAWSCsv(text);
+      const isJson = item.file.name.toLowerCase().endsWith('.json');
+      const parsed = isJson ? parseAWSJson(text) : parseAWSCsv(text);
+      logMsg('  Format detected: ' + (isJson ? 'JSON' : 'CSV'), 'step');
       if (!parsed.rows.length) { logMsg('No valid rows found', 'err'); item.status = 'error'; continue; }
       if (parsed.filtered > 0) logMsg('  Removed ' + parsed.filtered + ' zero-value row(s)', 'warn');
 
