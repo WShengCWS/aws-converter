@@ -417,10 +417,19 @@ async function buildXlsx(parsed, filename) {
 
   ws['!ref'] = 'A1:' + lastCol + (AR + 1);
 
-  // ── LAST STEP: Autofit column widths + row heights (table area only, rows 2..TR) ──
-  // All styles/alignment are already written above — autofit runs last so it
-  // measures final cell content without interfering with any earlier logic.
-  const CONFIG_MAX_WIDTH = 80; // hard cap for Configuration summary column
+  // ── LAST STEP: Calculate autofit dimensions before writing ──────────────
+  // Scan table area (rows 2..TR) only. Acknowledgement rows are excluded.
+  // Excel character width unit ≈ 7px at default font. We measure actual string
+  // lengths and convert to Excel's character-width unit (wch).
+  // For row heights we calculate how many lines config text wraps into at the
+  // capped column width, then convert to Excel points (1pt ≈ 1.33px).
+
+  const CONFIG_MAX_WCH = 80; // hard cap on config column width in Excel char units
+  const CHAR_PX        = 7;  // approx px per character at Calibri 11pt
+  const PT_PER_LINE    = 14; // Excel row height in points per wrapped line
+  const MIN_ROW_PT     = 15; // minimum row height in points
+
+  // ── 1. Measure max content length per column ──
   const colWidths = Array(colCount).fill(0);
   for (let r2 = 2; r2 <= TR; r2++) {
     for (let ci2 = 0; ci2 < colCount; ci2++) {
@@ -428,30 +437,39 @@ async function buildXlsx(parsed, filename) {
       if (!cell) continue;
       let len;
       if (cell.t === 'n' && cell.v !== undefined) {
-        // Estimate formatted number width e.g. "1,149,928.70"
-        len = Number(cell.v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).length + 2;
+        len = Number(cell.v).toLocaleString('en-US', {
+          minimumFractionDigits: 2, maximumFractionDigits: 2
+        }).length + 2;
       } else {
         len = String(cell.v !== undefined ? cell.v : '').length;
       }
       if (len > colWidths[ci2]) colWidths[ci2] = len;
     }
   }
-  ws['!cols'] = colWidths.map((w, i) => {
+
+  // ── 2. Compute final wch per column (with min/max guards) ──
+  const finalColWch = colWidths.map((w, i) => {
     const isConfig  = (i === configIdx);
     const isNumeric = numericIdx.includes(i);
     const MIN = isConfig ? 40 : (isNumeric ? 16 : 10);
-    const MAX = isConfig ? CONFIG_MAX_WIDTH : Infinity;
-    return { wch: Math.min(Math.max(w + 2, MIN), MAX) };
+    const MAX = isConfig ? CONFIG_MAX_WCH : Infinity;
+    return Math.min(Math.max(w + 2, MIN), MAX);
   });
 
-  // Autofit row heights — based on how much config text wraps inside its capped width
-  const configColWidth = ws['!cols'][configIdx]?.wch || CONFIG_MAX_WIDTH;
+  // Set !cols so xlsx-js-style writes initial <col> elements
+  ws['!cols'] = finalColWch.map(wch => ({ wch }));
+
+  // ── 3. Compute row heights in points ──
+  const configWch = finalColWch[configIdx] || CONFIG_MAX_WCH;
+  // Approximate chars per line = column pixel width / char pixel width
+  const charsPerLine = Math.floor((configWch * CHAR_PX) / CHAR_PX); // = configWch
   ws['!rows'] = [];
   for (let r2 = 2; r2 <= TR; r2++) {
     const cell = ws[C(configIdx) + r2];
     const text = cell?.v ? String(cell.v) : '';
-    const lines = text.length > 0 ? Math.ceil(text.length / configColWidth) : 1;
-    ws['!rows'][r2 - 1] = { hpx: Math.max(20, lines * 15) };
+    const lines = text.length > 0 ? Math.ceil(text.length / charsPerLine) : 1;
+    const ht = Math.max(MIN_ROW_PT, lines * PT_PER_LINE);
+    ws['!rows'][r2 - 1] = { hpt: ht, hpx: Math.round(ht * 1.333) };
   }
 
   XLSX.utils.book_append_sheet(wb, ws, sname);
@@ -459,9 +477,60 @@ async function buildXlsx(parsed, filename) {
   // Write base buffer
   const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
 
-  // ── Inject Excel Table via JSZip ────────────────────────────────────────
+  // ── Inject Excel Table + enforce col/row dimensions via JSZip ────────────
+  // xlsx-js-style writes <col> and <row> elements but does NOT always set
+  // customWidth="1" / customHeight="1" which Excel requires to honour them.
+  // We patch sheet1.xml directly to guarantee enforcement.
   const zip = await JSZip.loadAsync(buf);
 
+  // ── Patch sheet1.xml ─────────────────────────────────────────────────────
+  let sheetXml = await zip.file('xl/worksheets/sheet1.xml').async('string');
+
+  // (a) Replace all <col ...> elements — rewrite with customWidth + bestFit
+  sheetXml = sheetXml.replace(/<cols>[\s\S]*?<\/cols>/, () => {
+    const colEls = finalColWch.map((wch, i) => {
+      const colNum = i + 1;
+      // Convert wch to EMUs-based width Excel actually uses:
+      // Excel stores width as (chars * maxCharWidth + padding) / maxCharWidth
+      // but wch in sheet XML IS the character unit directly.
+      return `<col min="${colNum}" max="${colNum}" width="${wch.toFixed(2)}" customWidth="1" bestFit="1"/>`;
+    }).join('');
+    return `<cols>${colEls}</cols>`;
+  });
+
+  // If no <cols> block was written by xlsx-js-style, inject one before <sheetData>
+  if (!sheetXml.includes('<cols>')) {
+    const colEls = finalColWch.map((wch, i) => {
+      const colNum = i + 1;
+      return `<col min="${colNum}" max="${colNum}" width="${wch.toFixed(2)}" customWidth="1" bestFit="1"/>`;
+    }).join('');
+    sheetXml = sheetXml.replace('<sheetData>', `<cols>${colEls}</cols><sheetData>`);
+  }
+
+  // (b) Enforce customHeight="1" on all <row> elements that have a ht attribute
+  sheetXml = sheetXml.replace(/<row ([^>]*ht="[^"]*")[^>]*>/g, (match, attrs) => {
+    if (match.includes('customHeight')) return match;
+    return match.replace('>', ' customHeight="1">');
+  });
+
+  // (c) Inject tableParts if not present
+  if (!sheetXml.includes('tableParts')) {
+    sheetXml = sheetXml.replace('</worksheet>',
+      '<tableParts count="1"><tablePart xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"/></tableParts></worksheet>');
+  }
+
+  zip.file('xl/worksheets/sheet1.xml', sheetXml);
+
+  // ── Sheet rels ────────────────────────────────────────────────────────────
+  const sheetRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table"
+    Target="/xl/tables/table1.xml"/>
+</Relationships>`;
+  zip.file('xl/worksheets/_rels/sheet1.xml.rels', sheetRelsXml);
+
+  // ── Table XML ─────────────────────────────────────────────────────────────
   const tableRef = 'A2:' + lastCol + TR;
   const tableColsXml = HEADERS.map((h, i) =>
     `    <tableColumn id="${i+1}" name="${h}"/>`
@@ -477,27 +546,9 @@ ${tableColsXml}
     showFirstColumn="0" showLastColumn="0"
     showRowStripes="1" showColumnStripes="0"/>
 </table>`;
-
   zip.file('xl/tables/table1.xml', tableXml);
 
-  // Sheet rels
-  const sheetRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1"
-    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table"
-    Target="/xl/tables/table1.xml"/>
-</Relationships>`;
-  zip.file('xl/worksheets/_rels/sheet1.xml.rels', sheetRelsXml);
-
-  // Patch sheet1.xml — add tableParts if not present
-  let sheetXml = await zip.file('xl/worksheets/sheet1.xml').async('string');
-  if (!sheetXml.includes('tableParts')) {
-    sheetXml = sheetXml.replace('</worksheet>',
-      '<tableParts count="1"><tablePart xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"/></tableParts></worksheet>');
-    zip.file('xl/worksheets/sheet1.xml', sheetXml);
-  }
-
-  // Patch [Content_Types].xml
+  // ── Content Types ─────────────────────────────────────────────────────────
   let ctXml = await zip.file('[Content_Types].xml').async('string');
   if (!ctXml.includes('table1.xml')) {
     ctXml = ctXml.replace('</Types>',
@@ -506,7 +557,7 @@ ${tableColsXml}
   }
 
   const finalBuf = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
-  return { buf: finalBuf, outName: filename.replace(/\.(csv|json)$/i, '.xlsx'), ws, TR, DR, colCount, numericIdx, configIdx, C };
+  return { buf: finalBuf, outName: filename.replace(/\.(csv|json)$/i, '.xlsx') };
 }
 
 // ── UI state ───────────────────────────────────────────────────────────────
