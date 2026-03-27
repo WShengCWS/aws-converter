@@ -206,22 +206,43 @@ function parseAWSCsv(text) {
 
 
 // ── JSON Parser ─────────────────────────────────────────────────────────────
-// Parses AWS Pricing Calculator JSON export format
+// Supports two AWS Pricing Calculator JSON structures:
+//   Format A: Groups.Services = flat array           (e.g. RDS_Reserved_3_year.json)
+//   Format B: Groups.<GroupName>.Services = arrays   (e.g. Bluesify_OD_Single_AZ.json)
 function parseAWSJson(text) {
   let rows = [], filtered = 0;
   let data;
   try { data = JSON.parse(text); } catch(e) { throw new Error('Invalid JSON: ' + e.message); }
 
-  const groupName = data['Name'] || '';
-  const currency  = data?.Metadata?.Currency || 'USD';
-  const services  = data?.Groups?.Services || [];
+  const estimateName = data['Name'] || '';
+  const currency     = data?.Metadata?.Currency || 'USD';
+  const groups       = data?.Groups || {};
 
-  for (const svc of services) {
-    const service  = svc['Service Name'] || '';
-    const region   = svc['Region'] || '';
-    const desc     = '';
-    const cost     = svc['Service Cost'] || {};
-    const props    = svc['Properties'] || {};
+  // Collect all services across all group structures into a flat list
+  // Each entry: { groupName, service object }
+  const allServices = [];
+
+  if (Array.isArray(groups.Services)) {
+    // Format A: Groups.Services is a direct array — single unnamed group
+    for (const svc of groups.Services) {
+      allServices.push({ groupName: estimateName, svc });
+    }
+  } else {
+    // Format B: Groups is an object of named groups, each with a Services array
+    for (const [groupKey, groupVal] of Object.entries(groups)) {
+      const services = Array.isArray(groupVal?.Services) ? groupVal.Services : [];
+      for (const svc of services) {
+        allServices.push({ groupName: groupKey, svc });
+      }
+    }
+  }
+
+  for (const { groupName, svc } of allServices) {
+    const service = svc['Service Name'] || '';
+    const region  = svc['Region'] || '';
+    const desc    = svc['Description'] || '';
+    const cost    = svc['Service Cost'] || {};
+    const props   = svc['Properties'] || {};
 
     const upfrontVal = parseFloat(cost['upfront'] || '0');
     const monthlyVal = parseFloat(cost['monthly'] || '0');
