@@ -304,19 +304,12 @@ async function buildXlsx(parsed, filename) {
   // Row 1 title
   ws['A1'] = { v: 'Detailed Estimate', t: 's', s: styleCell({}) };
 
-  // Row 2 headers — ALL left-aligned, numeric headers right-aligned, currency center
+  // Row 2 headers — ALL strictly left-aligned, bold
   HEADERS.forEach((h, i) => {
-    const isNumeric  = numericIdx.includes(i);
-    const isCurrency = (i === currencyIdx);
     ws[C(i) + '2'] = {
       v: h, t: 's',
-      s: styleCell({
-        bold: true,
-        wrap: (i === configIdx),
-        rightAlign: isNumeric,
-        h: isCurrency ? 'center' : undefined
-        // all others default to left via styleCell default
-      })
+      s: styleCell({ bold: true, wrap: (i === configIdx) })
+      // no rightAlign, no h override — pure left for every header
     };
   });
 
@@ -403,29 +396,43 @@ async function buildXlsx(parsed, filename) {
 
   ws['!ref'] = 'A1:' + lastCol + (AR + 1);
 
-  if (hasUpfrontCol) {
-    ws['!cols'] = [
-      { wch: 17 },   // A Group
-      { wch: 21 },   // B Region
-      { wch: 30 },   // C Description
-      { wch: 26.5 }, // D Service
-      { wch: 14 },   // E Upfront
-      { wch: 14 },   // F Monthly
-      { wch: 20.7 }, // G First 12 months
-      { wch: 11 },   // H Currency
-      { wch: 90 }    // I Config summary
-    ];
-  } else {
-    ws['!cols'] = [
-      { wch: 17 },   // A Group
-      { wch: 21 },   // B Region
-      { wch: 30 },   // C Description
-      { wch: 26.5 }, // D Service
-      { wch: 14 },   // E Monthly
-      { wch: 20.7 }, // F First 12 months
-      { wch: 11 },   // G Currency
-      { wch: 90 }    // H Config summary
-    ];
+  // ── Autofit column widths based on actual cell content (table area only) ──
+  // Scan rows 2 (header) through TR (total row), skip acknowledgement rows
+  const colWidths = Array(colCount).fill(0);
+  for (let r = 2; r <= TR; r++) {
+    for (let ci2 = 0; ci2 < colCount; ci2++) {
+      const cell = ws[C(ci2) + r];
+      if (!cell) continue;
+      const val = cell.v !== undefined ? String(cell.v) : (cell.f ? '=FORMULA' : '');
+      // Use display-friendly length; for numeric cells estimate formatted width
+      let len;
+      if (cell.t === 'n' && cell.v !== undefined) {
+        // Formatted number like 1,149,928.70 — approximate char count
+        len = Number(cell.v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).length + 2;
+      } else {
+        len = val.length;
+      }
+      // Config summary: cap at 60 chars for column width (content wraps)
+      if (ci2 === configIdx) len = Math.min(len, 60);
+      if (len > colWidths[ci2]) colWidths[ci2] = len;
+    }
+  }
+  // Add padding and set minimum widths per column type
+  ws['!cols'] = colWidths.map((w, i) => {
+    const MIN = (i === configIdx) ? 40 : (numericIdx.includes(i) ? 16 : 10);
+    return { wch: Math.max(w + 2, MIN) };
+  });
+
+  // ── Autofit row heights for table rows (header + data + total) ──
+  // Config summary col can wrap — estimate height by content length / col width
+  const configColWidth = ws['!cols'][configIdx]?.wch || 60;
+  ws['!rows'] = [];
+  for (let r = 2; r <= TR; r++) {
+    const configCell = ws[C(configIdx) + r];
+    const configText = configCell?.v ? String(configCell.v) : '';
+    const lines = configText.length > 0 ? Math.ceil(configText.length / configColWidth) : 1;
+    const hpx = Math.max(20, lines * 15); // 15px per line, min 20px
+    ws['!rows'][r - 1] = { hpx };
   }
 
   XLSX.utils.book_append_sheet(wb, ws, sname);
@@ -544,9 +551,19 @@ function setStep(n) {
 // ── Events ─────────────────────────────────────────────────────────────────
 const dz = document.getElementById('dropZone');
 const fi = document.getElementById('fileInput');
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
-dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); addFiles([...e.dataTransfer.files]); });
+
+function onDragOver(e) { e.preventDefault(); e.stopPropagation(); dz.classList.add('drag-over'); }
+function onDragLeave(e) { e.preventDefault(); e.stopPropagation(); dz.classList.remove('drag-over'); }
+function onDrop(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  dz.classList.remove('drag-over');
+  if (e.dataTransfer && e.dataTransfer.files) addFiles([...e.dataTransfer.files]);
+}
+
+dz.addEventListener('dragover',  onDragOver);
+dz.addEventListener('dragleave', onDragLeave);
+dz.addEventListener('drop',      onDrop);
 fi.addEventListener('change', e => addFiles([...e.target.files]));
 
 document.getElementById('clearBtn').addEventListener('click', () => {
