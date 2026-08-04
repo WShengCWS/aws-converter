@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AWS Estimate Converter</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap');
+  :root {
+    --bg:#0f0f0f;--surface:#181818;--surface2:#222;--border:#2a2a2a;
+    --accent:#FF6B35;--text:#f0f0f0;--muted:#666;
+    --green:#4ade80;--yellow:#fbbf24;
+    --mono:'DM Mono',monospace;--sans:'Syne',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 20px 80px}
+  .noise{position:fixed;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");pointer-events:none;z-index:0;opacity:.5}
+  .wrapper{position:relative;z-index:1;width:100%;max-width:780px}
+  header{margin-bottom:44px;padding-top:8px}
+  .badge{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--accent);background:rgba(255,107,53,.1);border:1px solid rgba(255,107,53,.25);padding:4px 10px;border-radius:100px;margin-bottom:18px}
+  .badge::before{content:"●";font-size:8px;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  h1{font-size:clamp(28px,5vw,46px);font-weight:800;line-height:1.05;letter-spacing:-.03em}
+  h1 span{color:var(--accent)}
+  .subtitle{margin-top:10px;font-family:var(--mono);font-size:12.5px;color:var(--muted);line-height:1.7}
+  .drop-zone{border:1.5px dashed var(--border);border-radius:16px;padding:44px 32px;text-align:center;cursor:pointer;transition:all .2s;background:var(--surface);position:relative;overflow:hidden}
+  .drop-zone::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(255,107,53,.05) 0%,transparent 70%);pointer-events:none}
+  .drop-zone:hover,.drop-zone.drag-over{border-color:var(--accent);background:rgba(255,107,53,.04)}
+  .drop-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer}
+  .drop-icon{width:52px;height:52px;margin:0 auto 18px;background:rgba(255,107,53,.1);border:1px solid rgba(255,107,53,.2);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:22px}
+  .drop-zone h2{font-size:17px;font-weight:700;letter-spacing:-.02em;margin-bottom:5px}
+  .drop-zone p{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .file-list{margin-top:16px;display:flex;flex-direction:column;gap:9px}
+  .file-item{background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:13px 16px;display:flex;align-items:center;gap:12px;animation:slideIn .22s ease}
+  @keyframes slideIn{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
+  .file-icon{font-size:18px;flex-shrink:0}
+  .file-info{flex:1;min-width:0}
+  .file-name{font-family:var(--mono);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .file-size{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:2px}
+  .file-status{font-family:var(--mono);font-size:11px;padding:3px 9px;border-radius:100px;flex-shrink:0}
+  .file-status.pending{background:rgba(255,107,53,.1);color:var(--accent)}
+  .file-status.done{background:rgba(74,222,128,.1);color:var(--green)}
+  .file-status.error{background:rgba(248,113,113,.1);color:#f87171}
+  .remove-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:15px;padding:4px;border-radius:6px;transition:color .15s;flex-shrink:0}
+  .remove-btn:hover{color:#f87171}
+  .steps{display:flex;margin:22px 0 0;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .step-item{flex:1;padding:12px 8px;text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--muted);border-right:1px solid var(--border);transition:all .2s}
+  .step-item:last-child{border-right:none}
+  .step-item.active{color:var(--accent);background:rgba(255,107,53,.05)}
+  .step-item.done{color:var(--green)}
+  .step-num{display:block;font-size:15px;margin-bottom:3px}
+  .actions{margin-top:20px;display:flex;gap:10px;flex-wrap:wrap}
+  .btn{font-family:var(--sans);font-size:14px;font-weight:700;letter-spacing:-.01em;padding:13px 26px;border-radius:10px;border:none;cursor:pointer;transition:all .18s;display:flex;align-items:center;gap:8px}
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-primary:hover{background:#e85d29;transform:translateY(-1px)}
+  .btn-primary:disabled{background:#2a2a2a;color:#444;cursor:not-allowed;transform:none}
+  .btn-green{background:#166534;color:var(--green);border:1px solid rgba(74,222,128,.25)}
+  .btn-green:hover{background:#14532d;border-color:rgba(74,222,128,.5);transform:translateY(-1px)}
+  .btn-green:disabled{background:#2a2a2a;color:#444;border-color:transparent;cursor:not-allowed;transform:none}
+  .btn-ghost{background:var(--surface2);color:var(--text);border:1px solid var(--border)}
+  .btn-ghost:hover{border-color:#555}
+  .log{margin-top:22px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;font-family:var(--mono);font-size:12px;line-height:1.9;color:var(--muted);max-height:240px;overflow-y:auto;display:none}
+  .log.visible{display:block}
+  .log .ok{color:var(--green)}.log .err{color:#f87171}.log .info{color:var(--accent)}.log .warn{color:var(--yellow)}.log .step{color:#94a3b8}
+  .tips{margin-top:44px;border-top:1px solid var(--border);padding-top:28px}
+  .tips-title{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-family:var(--mono);margin-bottom:18px}
+  .tips-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:500px){.tips-grid{grid-template-columns:1fr}}
+  .tip{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:15px 16px}
+  .tip-head{font-size:13px;font-weight:700;margin-bottom:5px;display:flex;align-items:center;gap:7px}
+  .tip-body{font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.6}
+</style>
+</head>
+<body>
+<div class="noise"></div>
+<div class="wrapper">
+  <header>
+    <div class="badge">AWS Pricing Calculator</div>
+    <h1>CSV &rarr; <span>Excel</span><br>Converter</h1>
+    <p class="subtitle">
+      Drop your AWS Pricing Calculator .csv or .json exports.<br>
+      Styled .xlsx · Excel Table · Orange totals · Upfront + Monthly columns.
+    </p>
+  </header>
+
+  <div class="drop-zone" id="dropZone">
+    <input type="file" id="fileInput" accept=".csv,.json" multiple>
+    <div class="drop-icon">&#128193;</div>
+    <h2>Drop CSV files here</h2>
+    <p>or click to browse &middot; .csv and .json supported</p>
+  </div>
+
+  <div class="file-list" id="fileList"></div>
+
+  <div class="steps" id="stepsBar" style="display:none">
+    <div class="step-item" id="s1"><span class="step-num">&#129529;</span>1. Clean</div>
+    <div class="step-item" id="s2"><span class="step-num">&#128208;</span>2. Format</div>
+    <div class="step-item" id="s3"><span class="step-num">&Sigma;</span>3. Formulas</div>
+    <div class="step-item" id="s4"><span class="step-num">&#10003;</span>4. Validate</div>
+  </div>
+
+  <div class="actions">
+    <button class="btn btn-primary" id="convertBtn"  disabled>&#9881; Convert</button>
+    <button class="btn btn-green"   id="downloadBtn" disabled>&#8681; Download</button>
+    <button class="btn btn-ghost"   id="clearBtn">Clear all</button>
+  </div>
+
+  <pre class="log" id="log"></pre>
+
+  <div class="tips">
+    <div class="tips-title">What this converter does</div>
+    <div class="tips-grid">
+      <div class="tip">
+        <div class="tip-head">&#129529; Row Filtering</div>
+        <div class="tip-body">Rows with upfront cost are kept and totalled. Rows where both upfront AND monthly are zero/empty are removed.</div>
+      </div>
+      <div class="tip">
+        <div class="tip-head">&#128202; Excel Table</div>
+        <div class="tip-body">Full Excel Table (TableStyleLight8) injected via JSZip. All cells centre + middle aligned except Configuration Summary (left-aligned).</div>
+      </div>
+      <div class="tip">
+        <div class="tip-head">&Sigma; Range Formulas</div>
+        <div class="tip-body">Totals use SUM(). Upfront column totalled separately. First 12 months = (Upfront + Monthly×12) per row. Comma format on all numeric columns.</div>
+      </div>
+      <div class="tip">
+        <div class="tip-head">&#127987; Orange Total Row</div>
+        <div class="tip-body">Total row filled FCE4D6 (Orange Accent 2 Lighter 80%) with bold text. Configuration summary column is left-aligned. No Excel repair errors.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Helpers ────────────────────────────────────────────────────────────────
+function roundHalfUp(v, dp = 2) {
+  const m = Math.pow(10, dp);
+  return Math.round((v + Number.EPSILON) * m) / m;
+}
+
+function isZeroOrEmpty(v) {
+  const s = String(v).trim();
+  return s === '' || parseFloat(s) === 0 || isNaN(parseFloat(s));
+}
+
+function parseCsvLine(line) {
+  const res = []; let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { if (inQ && line[i + 1] === '"') { cur += '"'; i++; } else inQ = !inQ; }
+    else if (ch === ',' && !inQ) { res.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  res.push(cur);
+  return res;
+}
+
+// ── CSV Parser ─────────────────────────────────────────────────────────────
+// Logic:
+//   - Keep row if upfront > 0  (regardless of monthly)
+//   - Keep row if monthly > 0  (regardless of upfront)
+//   - Remove row if BOTH upfront == 0/empty AND monthly == 0/empty
+function parseAWSCsv(text) {
+  const lines = text.split('\n');
+  let rows = [], filtered = 0, headerFound = false;
+
+  for (const line of lines) {
+    if (line.startsWith('Group hierarchy')) { headerFound = true; continue; }
+    if (!headerFound) continue;
+    const t = line.trim();
+    if (!t || t.startsWith('Acknowledgement') || t.startsWith('"*')) continue;
+    const cols = parseCsvLine(t);
+    if (cols.length < 9) continue;
+
+    // CSV columns: Group, Region, Description, Service, Upfront, Monthly, First12, Currency, ...Config
+    const [group, region, desc, service, upfrontRaw, monthlyRaw, first12Raw, currency, ...configParts] = cols;
+    // Strip leading comma from config summary (CSV artifact)
+    const config = configParts.join(',').replace(/^"|"$/g, '').replace(/^,\s*/, '');
+
+    const upfrontVal = parseFloat(upfrontRaw);
+    const monthlyVal = parseFloat(monthlyRaw);
+
+    const hasUpfront = !isNaN(upfrontVal) && upfrontVal > 0;
+    const hasMonthly = !isNaN(monthlyVal) && monthlyVal > 0;
+    const upfrontMissing = upfrontRaw === undefined || String(upfrontRaw).trim() === '';
+
+    // Remove row if upfront column is entirely absent/empty
+    if (upfrontMissing) { filtered++; continue; }
+    // Remove row if both upfront and monthly are zero/empty
+    if (!hasUpfront && !hasMonthly) { filtered++; continue; }
+
+    rows.push({
+      group,
+      region,
+      desc,
+      service,
+      upfront: hasUpfront ? roundHalfUp(upfrontVal, 2) : 0,
+      monthly: hasMonthly ? roundHalfUp(monthlyVal, 2) : 0,
+      currency,
+      config
+    });
+  }
+  return { rows, filtered };
+}
+
+
+// ── JSON Parser ─────────────────────────────────────────────────────────────
+// Supports two AWS Pricing Calculator JSON structures:
+//   Format A: Groups.Services = flat array           (e.g. RDS_Reserved_3_year.json)
+//   Format B: Groups.<GroupName>.Services = arrays   (e.g. Bluesify_OD_Single_AZ.json)
+function parseAWSJson(text) {
+  let rows = [], filtered = 0;
+  let data;
+  try { data = JSON.parse(text); } catch(e) { throw new Error('Invalid JSON: ' + e.message); }
+
+  const estimateName = data['Name'] || '';
+  const currency     = data?.Metadata?.Currency || 'USD';
+  const groups       = data?.Groups || {};
+
+  // Collect all services across all group structures into a flat list
+  // Each entry: { groupName, service object }
+  const allServices = [];
+
+  if (Array.isArray(groups.Services)) {
+    // Format A: Groups.Services is a direct array — single unnamed group
+    for (const svc of groups.Services) {
+      allServices.push({ groupName: estimateName, svc });
+    }
+  } else {
+    // Format B: Groups is an object of named groups, each with a Services array
+    for (const [groupKey, groupVal] of Object.entries(groups)) {
+      const services = Array.isArray(groupVal?.Services) ? groupVal.Services : [];
+      for (const svc of services) {
+        allServices.push({ groupName: groupKey, svc });
+      }
+    }
+  }
+
+  for (const { groupName, svc } of allServices) {
+    const service = svc['Service Name'] || '';
+    const region  = svc['Region'] || '';
+    const desc    = svc['Description'] || '';
+    const cost    = svc['Service Cost'] || {};
+    const props   = svc['Properties'] || {};
+
+    const upfrontVal = parseFloat(cost['upfront'] || '0');
+    const monthlyVal = parseFloat(cost['monthly'] || '0');
+
+    const hasUpfront = !isNaN(upfrontVal) && upfrontVal > 0;
+    const hasMonthly = !isNaN(monthlyVal) && monthlyVal > 0;
+
+    // Skip rows where both are zero
+    if (!hasUpfront && !hasMonthly) { filtered++; continue; }
+
+    // Build config summary from Properties object
+    const config = Object.entries(props)
+      .map(([k, v]) => k + ': ' + v)
+      .join(', ');
+
+    rows.push({
+      group:   groupName,
+      region,
+      desc,
+      service,
+      upfront: hasUpfront ? roundHalfUp(upfrontVal, 2) : 0,
+      monthly: hasMonthly ? roundHalfUp(monthlyVal, 2) : 0,
+      currency,
+      config
+    });
+  }
+  return { rows, filtered };
+}
+
+// ── Style helpers ──────────────────────────────────────────────────────────
+const ORANGE = 'FCE4D6';
+const NUM_FMT = '#,##0.00';
+
+// Alignment: rightAlign=true for numbers, h='center' for currency, default is left
+function styleCell(opts = {}) {
+  const s = {};
+  if (opts.fill) s.fill = { fgColor: { rgb: opts.fill }, patternType: 'solid' };
+  s.font = { bold: opts.bold || false, name: 'Calibri', sz: 11 };
+  let horiz = 'left'; // default everything to left
+  if (opts.rightAlign) horiz = 'right';
+  else if (opts.h) horiz = opts.h; // explicit override (e.g. 'center' for currency)
+  s.alignment = {
+    horizontal: horiz,
+    vertical: opts.v || 'center',
+    wrapText: opts.wrap || false
+  };
+  if (opts.numFmt) s.numFmt = opts.numFmt;
+  return s;
+}
+
+// ── Build xlsx ─────────────────────────────────────────────────────────────
+// Columns WITH upfront:    A=Group B=Region C=Desc D=Service E=Upfront F=Monthly G=First12 H=Currency I=Config
+// Columns WITHOUT upfront: A=Group B=Region C=Desc D=Service E=Monthly F=First12  G=Currency H=Config
+async function buildXlsx(parsed, filename) {
+  const { rows } = parsed;
+  const wb = XLSX.utils.book_new();
+  const sname = (rows[0]?.group || filename.replace(/\.csv$/i, '')).substring(0, 31) || 'Sheet1';
+  const ws = {};
+
+  // Detect if ANY row has a non-zero upfront — if total upfront == 0, drop the column entirely
+  const totalUpfront = rows.reduce((sum, r) => sum + (r.upfront || 0), 0);
+  const hasUpfrontCol = totalUpfront > 0;
+
+  // ── Column definitions (conditional) ──────────────────────────────────
+  // With upfront:    9 cols  A-I
+  // Without upfront: 8 cols  A-H
+  const HEADERS = hasUpfrontCol
+    ? ['Group hierarchy', 'Region', 'Description', 'Service', 'Upfront', 'Monthly', 'First 12 months total', 'Currency', 'Configuration summary']
+    : ['Group hierarchy', 'Region', 'Description', 'Service', 'Monthly', 'First 12 months total', 'Currency', 'Configuration summary'];
+  const colCount = HEADERS.length;
+
+  // Helper: get Excel column letter by logical index
+  const C = i => XLSX.utils.encode_col(i);
+
+  // Numeric col indices (0-based)
+  const numericIdx  = hasUpfrontCol ? [4, 5, 6] : [4, 5];
+  const currencyIdx = hasUpfrontCol ? 7 : 6;
+  const configIdx   = hasUpfrontCol ? 8 : 7;
+
+  // Row 1 title
+  ws['A1'] = { v: 'Detailed Estimate', t: 's', s: styleCell({}) };
+
+  // Row 2 headers — ALL strictly left-aligned, bold
+  HEADERS.forEach((h, i) => {
+    ws[C(i) + '2'] = {
+      v: h, t: 's',
+      s: styleCell({ bold: true, wrap: (i === configIdx) })
+      // no rightAlign, no h override — pure left for every header
+    };
+  });
+
+  // Data rows starting at row 3
+  const DR = 3;
+  rows.forEach((r, idx) => {
+    const rowN = DR + idx;
+
+    ws[C(0) + rowN] = { v: r.group,   t: 's', s: styleCell({}) };
+    ws[C(1) + rowN] = { v: r.region,  t: 's', s: styleCell({}) };
+    ws[C(2) + rowN] = { v: r.desc,    t: 's', s: styleCell({}) };
+    ws[C(3) + rowN] = { v: r.service, t: 's', s: styleCell({}) };
+
+    let ci = 4; // next column index
+
+    if (hasUpfrontCol) {
+      // Upfront column — one-time cost, right-aligned
+      if (r.upfront > 0) {
+        ws[C(ci) + rowN] = { v: r.upfront, t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT, rightAlign: true }) };
+      } else {
+        ws[C(ci) + rowN] = { v: '-', t: 's', s: styleCell({ rightAlign: true }) };
+      }
+      ci++;
+    }
+
+    // Monthly column — right-aligned
+    if (r.monthly > 0) {
+      ws[C(ci) + rowN] = { v: r.monthly, t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT, rightAlign: true }) };
+    } else {
+      ws[C(ci) + rowN] = { v: '-', t: 's', s: styleCell({ rightAlign: true }) };
+    }
+    ci++;
+
+    // First 12 months = Monthly * 12
+    ws[C(ci) + rowN] = { f: C(ci-1) + rowN + '*12', t: 'n', z: NUM_FMT, s: styleCell({ numFmt: NUM_FMT, rightAlign: true }) };
+    ci++;
+
+    // Currency — center
+    ws[C(ci) + rowN] = { v: r.currency, t: 's', s: styleCell({ bold: true, h: 'center' }) };
+    ci++;
+
+    // Config summary — left, wrap
+    ws[C(ci) + rowN] = { v: r.config, t: 's', s: styleCell({ wrap: true }) };
+  });
+
+  // ── Total row ──────────────────────────────────────────────────────────
+  const TR = DR + rows.length;
+  const lastDR = TR - 1;
+  const oStyle = (extra = {}) => styleCell({ fill: ORANGE, bold: true, ...extra });
+
+  // Fill A-C empty, D = TOTAL label right-aligned
+  ws[C(0) + TR] = { v: '', t: 's', s: oStyle({}) };
+  ws[C(1) + TR] = { v: '', t: 's', s: oStyle({}) };
+  ws[C(2) + TR] = { v: '', t: 's', s: oStyle({}) };
+  ws[C(3) + TR] = { v: 'TOTAL', t: 's', s: oStyle({ rightAlign: true }) };
+
+  let ti = 4;
+
+  if (hasUpfrontCol) {
+    ws[C(ti) + TR] = { f: 'SUM(' + C(ti) + DR + ':' + C(ti) + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
+    ti++;
+  }
+
+  // Monthly total
+  ws[C(ti) + TR] = { f: 'SUM(' + C(ti) + DR + ':' + C(ti) + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
+  ti++;
+
+  // First 12 months total
+  ws[C(ti) + TR] = { f: 'SUM(' + C(ti) + DR + ':' + C(ti) + lastDR + ')', t: 'n', z: NUM_FMT, s: oStyle({ numFmt: NUM_FMT, rightAlign: true }) };
+  ti++;
+
+  // Currency
+  ws[C(ti) + TR] = { v: 'USD', t: 's', s: oStyle({ h: 'center' }) };
+  ti++;
+
+  // Config (empty)
+  ws[C(ti) + TR] = { v: '', t: 's', s: oStyle({}) };
+
+  // Acknowledgement
+  const lastCol = C(colCount - 1);
+  const AR = TR + 3;
+  ws['A' + AR]       = { v: 'Acknowledgement', t: 's', s: styleCell({}) };
+  ws['A' + (AR + 1)] = { v: "* AWS Pricing Calculator provides only an estimate of your AWS fees and doesn't include any taxes that might apply.", t: 's', s: styleCell({}) };
+
+  ws['!ref'] = 'A1:' + lastCol + (AR + 1);
+
+  // ── LAST STEP: Calculate autofit dimensions before writing ──────────────
+  // Scan table area (rows 2..TR) only. Acknowledgement rows are excluded.
+  // Excel character width unit ≈ 7px at default font. We measure actual string
+  // lengths and convert to Excel's character-width unit (wch).
+  // For row heights we calculate how many lines config text wraps into at the
+  // capped column width, then convert to Excel points (1pt ≈ 1.33px).
+
+  const CONFIG_MAX_WCH = 80; // hard cap on config column width in Excel char units
+  const CHAR_PX        = 7;  // approx px per character at Calibri 11pt
+  const PT_PER_LINE    = 14; // Excel row height in points per wrapped line
+  const MIN_ROW_PT     = 15; // minimum row height in points
+
+  // ── 1. Measure max content length per column ──
+  const colWidths = Array(colCount).fill(0);
+  for (let r2 = 2; r2 <= TR; r2++) {
+    for (let ci2 = 0; ci2 < colCount; ci2++) {
+      const cell = ws[C(ci2) + r2];
+      if (!cell) continue;
+      let len;
+      if (cell.t === 'n' && cell.v !== undefined) {
+        len = Number(cell.v).toLocaleString('en-US', {
+          minimumFractionDigits: 2, maximumFractionDigits: 2
+        }).length + 2;
+      } else {
+        len = String(cell.v !== undefined ? cell.v : '').length;
+      }
+      if (len > colWidths[ci2]) colWidths[ci2] = len;
+    }
+  }
+
+  // ── 2. Compute final wch per column (with min/max guards) ──
+  const finalColWch = colWidths.map((w, i) => {
+    const isConfig  = (i === configIdx);
+    const isNumeric = numericIdx.includes(i);
+    const MIN = isConfig ? 40 : (isNumeric ? 16 : 10);
+    const MAX = isConfig ? CONFIG_MAX_WCH : Infinity;
+    return Math.min(Math.max(w + 2, MIN), MAX);
+  });
+
+  // Set !cols so xlsx-js-style writes initial <col> elements
+  ws['!cols'] = finalColWch.map(wch => ({ wch }));
+
+  // ── 3. Compute row heights in points ──
+  const configWch = finalColWch[configIdx] || CONFIG_MAX_WCH;
+  // Approximate chars per line = column pixel width / char pixel width
+  const charsPerLine = Math.floor((configWch * CHAR_PX) / CHAR_PX); // = configWch
+  ws['!rows'] = [];
+  for (let r2 = 2; r2 <= TR; r2++) {
+    const cell = ws[C(configIdx) + r2];
+    const text = cell?.v ? String(cell.v) : '';
+    const lines = text.length > 0 ? Math.ceil(text.length / charsPerLine) : 1;
+    const ht = Math.max(MIN_ROW_PT, lines * PT_PER_LINE);
+    ws['!rows'][r2 - 1] = { hpt: ht, hpx: Math.round(ht * 1.333) };
+  }
+
+  XLSX.utils.book_append_sheet(wb, ws, sname);
+
+  // Write base buffer
+  const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+
+  // ── Inject Excel Table + enforce col/row dimensions via JSZip ────────────
+  // xlsx-js-style writes <col> and <row> elements but does NOT always set
+  // customWidth="1" / customHeight="1" which Excel requires to honour them.
+  // We patch sheet1.xml directly to guarantee enforcement.
+  const zip = await JSZip.loadAsync(buf);
+
+  // ── Patch sheet1.xml ─────────────────────────────────────────────────────
+  let sheetXml = await zip.file('xl/worksheets/sheet1.xml').async('string');
+
+  // (a) Replace all <col ...> elements — rewrite with customWidth + bestFit
+  sheetXml = sheetXml.replace(/<cols>[\s\S]*?<\/cols>/, () => {
+    const colEls = finalColWch.map((wch, i) => {
+      const colNum = i + 1;
+      // Convert wch to EMUs-based width Excel actually uses:
+      // Excel stores width as (chars * maxCharWidth + padding) / maxCharWidth
+      // but wch in sheet XML IS the character unit directly.
+      return `<col min="${colNum}" max="${colNum}" width="${wch.toFixed(2)}" customWidth="1" bestFit="1"/>`;
+    }).join('');
+    return `<cols>${colEls}</cols>`;
+  });
+
+  // If no <cols> block was written by xlsx-js-style, inject one before <sheetData>
+  if (!sheetXml.includes('<cols>')) {
+    const colEls = finalColWch.map((wch, i) => {
+      const colNum = i + 1;
+      return `<col min="${colNum}" max="${colNum}" width="${wch.toFixed(2)}" customWidth="1" bestFit="1"/>`;
+    }).join('');
+    sheetXml = sheetXml.replace('<sheetData>', `<cols>${colEls}</cols><sheetData>`);
+  }
+
+  // (b) Enforce customHeight="1" on all <row> elements that have a ht attribute
+  sheetXml = sheetXml.replace(/<row ([^>]*ht="[^"]*")[^>]*>/g, (match, attrs) => {
+    if (match.includes('customHeight')) return match;
+    return match.replace('>', ' customHeight="1">');
+  });
+
+  // (c) Inject tableParts if not present
+  if (!sheetXml.includes('tableParts')) {
+    sheetXml = sheetXml.replace('</worksheet>',
+      '<tableParts count="1"><tablePart xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"/></tableParts></worksheet>');
+  }
+
+  zip.file('xl/worksheets/sheet1.xml', sheetXml);
+
+  // ── Sheet rels ────────────────────────────────────────────────────────────
+  const sheetRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table"
+    Target="/xl/tables/table1.xml"/>
+</Relationships>`;
+  zip.file('xl/worksheets/_rels/sheet1.xml.rels', sheetRelsXml);
+
+  // ── Table XML ─────────────────────────────────────────────────────────────
+  const tableRef = 'A2:' + lastCol + TR;
+  const tableColsXml = HEADERS.map((h, i) =>
+    `    <tableColumn id="${i+1}" name="${h}"/>`
+  ).join('\n');
+  const tableXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+  id="1" name="Table1" displayName="Table1"
+  ref="${tableRef}" headerRowCount="1">
+  <tableColumns count="${colCount}">
+${tableColsXml}
+  </tableColumns>
+  <tableStyleInfo name="TableStyleLight8"
+    showFirstColumn="0" showLastColumn="0"
+    showRowStripes="1" showColumnStripes="0"/>
+</table>`;
+  zip.file('xl/tables/table1.xml', tableXml);
+
+  // ── Content Types ─────────────────────────────────────────────────────────
+  let ctXml = await zip.file('[Content_Types].xml').async('string');
+  if (!ctXml.includes('table1.xml')) {
+    ctXml = ctXml.replace('</Types>',
+      '<Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/></Types>');
+    zip.file('[Content_Types].xml', ctXml);
+  }
+
+  const finalBuf = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+  return { buf: finalBuf, outName: filename.replace(/\.(csv|json)$/i, '.xlsx') };
+}
+
+// ── UI state ───────────────────────────────────────────────────────────────
+const files = [];
+const converted = {};
+
+function addFiles(newFiles) {
+  for (const f of newFiles) {
+    const ext = f.name.toLowerCase().split('.').pop();
+    if (ext !== 'csv' && ext !== 'json') { logMsg('Skipped "' + f.name + '" — only .csv and .json supported', 'err'); continue; }
+    if (files.find(x => x.file.name === f.name)) continue;
+    files.push({ file: f, status: 'pending' });
+    delete converted[f.name];
+  }
+  renderList();
+}
+
+function renderList() {
+  const list = document.getElementById('fileList');
+  list.innerHTML = '';
+  files.forEach((item, idx) => {
+    const div = document.createElement('div');
+    div.className = 'file-item';
+    div.innerHTML = '<div class="file-icon">&#128196;</div>' +
+      '<div class="file-info"><div class="file-name">' + item.file.name + '</div>' +
+      '<div class="file-size">' + (item.file.size / 1024).toFixed(1) + ' KB</div></div>' +
+      '<span class="file-status ' + item.status + '">' + item.status + '</span>' +
+      '<button class="remove-btn" data-idx="' + idx + '" title="Remove">&#10005;</button>';
+    list.appendChild(div);
+  });
+  document.querySelectorAll('.remove-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const idx = parseInt(e.target.dataset.idx);
+      delete converted[files[idx].file.name];
+      files.splice(idx, 1);
+      renderList(); refreshDownloadBtn();
+    });
+  });
+  document.getElementById('convertBtn').disabled = files.length === 0;
+  document.getElementById('stepsBar').style.display = files.length ? 'flex' : 'none';
+}
+
+function refreshDownloadBtn() {
+  document.getElementById('downloadBtn').disabled = !files.some(f => f.status === 'done');
+}
+
+function logMsg(msg, type = '') {
+  const log = document.getElementById('log');
+  log.classList.add('visible');
+  const s = document.createElement('span');
+  s.className = type; s.textContent = '> ' + msg + '\n';
+  log.appendChild(s); log.scrollTop = log.scrollHeight;
+}
+
+function setStep(n) {
+  ['s1', 's2', 's3', 's4'].forEach((id, i) => {
+    document.getElementById(id).className = 'step-item' + (i + 1 < n ? ' done' : i + 1 === n ? ' active' : '');
+  });
+}
+
+// ── Events ─────────────────────────────────────────────────────────────────
+const dz = document.getElementById('dropZone');
+const fi = document.getElementById('fileInput');
+
+function onDragOver(e) { e.preventDefault(); e.stopPropagation(); dz.classList.add('drag-over'); }
+function onDragLeave(e) { e.preventDefault(); e.stopPropagation(); dz.classList.remove('drag-over'); }
+function onDrop(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  dz.classList.remove('drag-over');
+  if (e.dataTransfer && e.dataTransfer.files) addFiles([...e.dataTransfer.files]);
+}
+
+dz.addEventListener('dragover',  onDragOver);
+dz.addEventListener('dragleave', onDragLeave);
+dz.addEventListener('drop',      onDrop);
+fi.addEventListener('change', e => addFiles([...e.target.files]));
+
+document.getElementById('clearBtn').addEventListener('click', () => {
+  files.length = 0; Object.keys(converted).forEach(k => delete converted[k]);
+  renderList();
+  const log = document.getElementById('log'); log.innerHTML = ''; log.classList.remove('visible');
+  ['s1', 's2', 's3', 's4'].forEach(id => document.getElementById(id).className = 'step-item');
+  document.getElementById('downloadBtn').disabled = true;
+});
+
+document.getElementById('convertBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('convertBtn');
+  btn.disabled = true; btn.textContent = 'Converting...';
+  document.getElementById('log').innerHTML = '';
+  document.getElementById('log').classList.add('visible');
+  document.getElementById('downloadBtn').disabled = true;
+
+  for (const item of files) {
+    if (item.status === 'done') continue;
+    try {
+      const text = await item.file.text();
+      logMsg('Processing: ' + item.file.name, 'info');
+
+      setStep(1);
+      logMsg('Step 1 — Cleaning data…', 'step');
+      const isJson = item.file.name.toLowerCase().endsWith('.json');
+      const parsed = isJson ? parseAWSJson(text) : parseAWSCsv(text);
+      logMsg('  Format detected: ' + (isJson ? 'JSON' : 'CSV'), 'step');
+      if (!parsed.rows.length) { logMsg('No valid rows found', 'err'); item.status = 'error'; continue; }
+      if (parsed.filtered > 0) logMsg('  Removed ' + parsed.filtered + ' zero-value row(s)', 'warn');
+
+      const upfrontRows = parsed.rows.filter(r => r.upfront > 0).length;
+      const monthlyRows = parsed.rows.filter(r => r.monthly > 0).length;
+      logMsg('  ' + parsed.rows.length + ' rows retained (' + upfrontRows + ' with upfront cost)', '');
+
+      setStep(2); logMsg('Step 2 — Applying styles…', 'step');
+      await new Promise(r => setTimeout(r, 30));
+
+      setStep(3); logMsg('Step 3 — Writing formulas + Table XML…', 'step');
+      await new Promise(r => setTimeout(r, 30));
+
+      setStep(4); logMsg('Step 4 — Finalising + autofit…', 'step');
+      const result = await buildXlsx(parsed, item.file.name);
+
+      converted[item.file.name] = result;
+      item.status = 'done';
+      logMsg('✓ Ready: ' + result.outName + ' (' + parsed.rows.length + ' rows)', 'ok');
+    } catch (e) {
+      item.status = 'error'; logMsg('Error: ' + e.message, 'err');
+      console.error(e);
+    }
+  }
+
+  renderList();
+  btn.disabled = false; btn.textContent = '⚙ Convert';
+  setStep(5);
+  logMsg('Done. Click Download to save.', 'info');
+  refreshDownloadBtn();
+});
+
+document.getElementById('downloadBtn').addEventListener('click', () => {
+  const btn = document.getElementById('downloadBtn');
+  btn.disabled = true; btn.textContent = 'Saving...';
+  logMsg('Downloading…', 'info');
+  let count = 0;
+  for (const item of files) {
+    if (item.status !== 'done') continue;
+    const result = converted[item.file.name];
+    if (!result) continue;
+    try {
+      const blob = new Blob([result.buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = result.outName;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      logMsg('Downloaded: ' + result.outName, 'ok');
+      count++;
+    } catch (e) {
+      logMsg('Error saving ' + item.file.name + ': ' + e.message, 'err');
+    }
+  }
+  btn.disabled = false; btn.textContent = '⬇ Download';
+  if (count > 0) logMsg(count + ' file(s) saved.', 'info');
+});
+</script>
+</body>
+</html>
