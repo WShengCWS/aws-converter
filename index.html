@@ -64,13 +64,6 @@
   .log{margin-top:22px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;font-family:var(--mono);font-size:12px;line-height:1.9;color:var(--muted);max-height:240px;overflow-y:auto;display:none}
   .log.visible{display:block}
   .log .ok{color:var(--green)}.log .err{color:#f87171}.log .info{color:var(--accent)}.log .warn{color:var(--yellow)}.log .step{color:#94a3b8}
-  .tips{margin-top:44px;border-top:1px solid var(--border);padding-top:28px}
-  .tips-title{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-family:var(--mono);margin-bottom:18px}
-  .tips-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  @media(max-width:500px){.tips-grid{grid-template-columns:1fr}}
-  .tip{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:15px 16px}
-  .tip-head{font-size:13px;font-weight:700;margin-bottom:5px;display:flex;align-items:center;gap:7px}
-  .tip-body{font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.6}
 </style>
 </head>
 <body>
@@ -108,28 +101,6 @@
   </div>
 
   <pre class="log" id="log"></pre>
-
-  <div class="tips">
-    <div class="tips-title">What this converter does</div>
-    <div class="tips-grid">
-      <div class="tip">
-        <div class="tip-head">&#129529; Row Filtering</div>
-        <div class="tip-body">Rows with upfront cost are kept and totalled. Rows where both upfront AND monthly are zero/empty are removed.</div>
-      </div>
-      <div class="tip">
-        <div class="tip-head">&#128202; Excel Table</div>
-        <div class="tip-body">Full Excel Table (TableStyleLight8) injected via JSZip. All cells centre + middle aligned except Configuration Summary (left-aligned).</div>
-      </div>
-      <div class="tip">
-        <div class="tip-head">&Sigma; Range Formulas</div>
-        <div class="tip-body">Totals use SUM(). Upfront column totalled separately. First 12 months = (Upfront + Monthly×12) per row. Comma format on all numeric columns.</div>
-      </div>
-      <div class="tip">
-        <div class="tip-head">&#127987; Orange Total Row</div>
-        <div class="tip-body">Total row filled FCE4D6 (Orange Accent 2 Lighter 80%) with bold text. Configuration summary column is left-aligned. No Excel repair errors.</div>
-      </div>
-    </div>
-  </div>
 </div>
 
 <script>
@@ -564,13 +535,26 @@ ${tableColsXml}
 const files = [];
 const converted = {};
 
+// Reset all in-progress/converted state — used both by "Clear all" and
+// automatically whenever a new drag/drop or file selection begins.
+function resetState() {
+  files.length = 0;
+  Object.keys(converted).forEach(k => delete converted[k]);
+  const log = document.getElementById('log');
+  log.innerHTML = '';
+  log.classList.remove('visible');
+  ['s1', 's2', 's3', 's4'].forEach(id => document.getElementById(id).className = 'step-item');
+  document.getElementById('downloadBtn').disabled = true;
+}
+
 function addFiles(newFiles) {
+  // New files starting means we drop whatever was there before.
+  resetState();
+
   for (const f of newFiles) {
     const ext = f.name.toLowerCase().split('.').pop();
     if (ext !== 'csv' && ext !== 'json') { logMsg('Skipped "' + f.name + '" — only .csv and .json supported', 'err'); continue; }
-    if (files.find(x => x.file.name === f.name)) continue;
     files.push({ file: f, status: 'pending' });
-    delete converted[f.name];
   }
   renderList();
 }
@@ -637,11 +621,8 @@ dz.addEventListener('drop',      onDrop);
 fi.addEventListener('change', e => addFiles([...e.target.files]));
 
 document.getElementById('clearBtn').addEventListener('click', () => {
-  files.length = 0; Object.keys(converted).forEach(k => delete converted[k]);
+  resetState();
   renderList();
-  const log = document.getElementById('log'); log.innerHTML = ''; log.classList.remove('visible');
-  ['s1', 's2', 's3', 's4'].forEach(id => document.getElementById(id).className = 'step-item');
-  document.getElementById('downloadBtn').disabled = true;
 });
 
 document.getElementById('convertBtn').addEventListener('click', async () => {
