@@ -283,11 +283,52 @@ function styleCell(opts = {}) {
 
 // ── Build xlsx ─────────────────────────────────────────────────────────────
 // Columns WITH upfront:    A=Group B=Region C=Desc D=Service E=Upfront F=Monthly G=First12 H=Currency I=Config
+// ── Excel sheet name sanitizer ──────────────────────────────────────────────
+// Single source of truth for turning ANY string (group label, filename, deeply
+// nested JSON path, whatever future AWS exports throw at us) into a valid
+// Excel sheet name. Handles every Excel naming rule in one place so this
+// never needs touching again just because a new nesting/naming pattern shows up.
+function sanitizeSheetName(raw, fallback = 'Sheet1', usedNames = new Set()) {
+  let name = String(raw || '').trim();
+
+  // 1. Replace all characters Excel forbids in sheet names: \ / ? * [ ] :
+  name = name.replace(/[\\/?*[\]:]/g, '-');
+
+  // 2. Collapse repeated separators/whitespace left behind by the replacement
+  name = name.replace(/\s*-\s*/g, ' - ').replace(/\s+/g, ' ').trim();
+
+  // 3. Excel disallows a sheet name starting or ending with an apostrophe
+  name = name.replace(/^'+|'+$/g, '').trim();
+
+  // 4. Excel caps sheet names at 31 characters
+  name = name.substring(0, 31).trim();
+
+  // 5. Excel reserves the name "History" (case-insensitive)
+  if (/^history$/i.test(name)) name = name + '_';
+
+  // 6. Fall back if nothing usable remains
+  if (!name) name = fallback;
+
+  // 7. Ensure uniqueness within this workbook — Excel requires distinct sheet
+  //    names, and future group naming could easily collide (e.g. two groups
+  //    that only differ in the part that got truncated at 31 chars).
+  let unique = name;
+  let n = 2;
+  while (usedNames.has(unique.toLowerCase())) {
+    const suffix = ' (' + n + ')';
+    unique = name.substring(0, 31 - suffix.length) + suffix;
+    n++;
+  }
+  usedNames.add(unique.toLowerCase());
+  return unique;
+}
+
 // Columns WITHOUT upfront: A=Group B=Region C=Desc D=Service E=Monthly F=First12  G=Currency H=Config
 async function buildXlsx(parsed, filename) {
   const { rows } = parsed;
   const wb = XLSX.utils.book_new();
-  const sname = (rows[0]?.group || filename.replace(/\.csv$/i, '')).substring(0, 31) || 'Sheet1';
+  const rawName = (rows[0]?.group || filename.replace(/\.(csv|json)$/i, ''));
+  const sname = sanitizeSheetName(rawName, 'Sheet1');
   const ws = {};
 
   // Detect if ANY row has a non-zero upfront — if total upfront == 0, drop the column entirely
