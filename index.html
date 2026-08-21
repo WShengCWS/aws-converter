@@ -177,9 +177,33 @@ function parseAWSCsv(text) {
 
 
 // ── JSON Parser ─────────────────────────────────────────────────────────────
-// Supports two AWS Pricing Calculator JSON structures:
-//   Format A: Groups.Services = flat array           (e.g. RDS_Reserved_3_year.json)
-//   Format B: Groups.<GroupName>.Services = arrays   (e.g. Bluesify_OD_Single_AZ.json)
+// Handles AWS Pricing Calculator JSON at any nesting depth. Rather than
+// hardcoding known shapes (Groups.Services flat array, Groups.<Name>.Services,
+// Groups.<Env>.<Category>.Services, ...), we recursively walk the tree and
+// treat ANY array found under a "Services" key as a services array. The
+// "group name" for a service is built from the chain of object keys leading
+// to it (joined with " / "), so deeper nesting just produces a more
+// descriptive group label instead of requiring new code.
+function collectServices(node, path, out) {
+  if (!node || typeof node !== 'object') return;
+
+  if (Array.isArray(node.Services)) {
+    const groupName = path.length ? path.join(' / ') : '';
+    for (const svc of node.Services) {
+      out.push({ groupName, svc });
+    }
+  }
+
+  // Recurse into any nested object values (covers arbitrary extra levels
+  // like Environment -> Category -> Services, or deeper).
+  for (const [key, val] of Object.entries(node)) {
+    if (key === 'Services') continue; // already handled above
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      collectServices(val, path.concat(key), out);
+    }
+  }
+}
+
 function parseAWSJson(text) {
   let rows = [], filtered = 0;
   let data;
@@ -189,26 +213,19 @@ function parseAWSJson(text) {
   const currency     = data?.Metadata?.Currency || 'USD';
   const groups       = data?.Groups || {};
 
-  // Collect all services across all group structures into a flat list
+  // Collect all services across any nesting depth into a flat list.
   // Each entry: { groupName, service object }
   const allServices = [];
+  collectServices(groups, [], allServices);
 
-  if (Array.isArray(groups.Services)) {
-    // Format A: Groups.Services is a direct array — single unnamed group
-    for (const svc of groups.Services) {
-      allServices.push({ groupName: estimateName, svc });
-    }
-  } else {
-    // Format B: Groups is an object of named groups, each with a Services array
-    for (const [groupKey, groupVal] of Object.entries(groups)) {
-      const services = Array.isArray(groupVal?.Services) ? groupVal.Services : [];
-      for (const svc of services) {
-        allServices.push({ groupName: groupKey, svc });
-      }
-    }
+  // Fallback: if nothing matched (e.g. Groups itself is a flat array of
+  // services rather than an object), handle that directly.
+  if (allServices.length === 0 && Array.isArray(groups)) {
+    for (const svc of groups) allServices.push({ groupName: estimateName, svc });
   }
 
   for (const { groupName, svc } of allServices) {
+    const groupLabel = groupName || estimateName;
     const service = svc['Service Name'] || '';
     const region  = svc['Region'] || '';
     const desc    = svc['Description'] || '';
@@ -230,7 +247,7 @@ function parseAWSJson(text) {
       .join(', ');
 
     rows.push({
-      group:   groupName,
+      group:   groupLabel,
       region,
       desc,
       service,
